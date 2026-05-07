@@ -6,16 +6,29 @@
 #include <fstream>
 #include <vector>
 #include <cstdint>
+#include <algorithm>
 
 using namespace std;
 
-const int TPQ = 480;        // ticks per quarter note
+const int TPQ = 480;
 const int BPM = 140;
 const int BARS = 64;
 
-const int DRUM_CHANNEL = 9; // MIDI channel 10 = index 9
-const int HIHAT = 42;       // closed hi-hat
+const int DRUM_CHANNEL = 9;
+
+const int KICK = 36;
 const int SNARE = 38;
+const int CLAP = 39;
+const int CLOSED_HAT = 42;
+const int OPEN_HAT = 46;
+const int TRIANGLE = 81;
+
+struct Event {
+    uint32_t tick;
+    int note;
+    int velocity;
+    int duration;
+};
 
 void writeByte(vector<uint8_t>& data, uint8_t b) {
     data.push_back(b);
@@ -35,18 +48,6 @@ void writeVarLen(vector<uint8_t>& data, uint32_t value) {
     }
 }
 
-void addNote(vector<uint8_t>& track, uint32_t delta, int note, int velocity, int duration) {
-    writeVarLen(track, delta);
-    writeByte(track, 0x90 | DRUM_CHANNEL);
-    writeByte(track, note);
-    writeByte(track, velocity);
-
-    writeVarLen(track, duration);
-    writeByte(track, 0x80 | DRUM_CHANNEL);
-    writeByte(track, note);
-    writeByte(track, 0);
-}
-
 void write32(ofstream& file, uint32_t value) {
     file.put((value >> 24) & 0xFF);
     file.put((value >> 16) & 0xFF);
@@ -61,9 +62,11 @@ void write16(ofstream& file, uint16_t value) {
 
 int main() {
     vector<uint8_t> track;
+    vector<Event> events;
+
+    int microsecondsPerQuarter = 60000000 / BPM;
 
     // Tempo meta event
-    int microsecondsPerQuarter = 60000000 / BPM;
     writeVarLen(track, 0);
     writeByte(track, 0xFF);
     writeByte(track, 0x51);
@@ -72,20 +75,51 @@ int main() {
     writeByte(track, (microsecondsPerQuarter >> 8) & 0xFF);
     writeByte(track, microsecondsPerQuarter & 0xFF);
 
-    uint32_t currentTick = 0;
-
     for (int bar = 0; bar < BARS; bar++) {
         uint32_t barStart = bar * 4 * TPQ;
 
+        // Kick on beats 1 and 3
+        events.push_back({barStart + 0 * TPQ, KICK, 120, 120});
+        events.push_back({barStart + 2 * TPQ, KICK, 115, 120});
+
+        // Snare and clap on beat 3
+        events.push_back({barStart + 2 * TPQ, SNARE, 110, 120});
+        events.push_back({barStart + 2 * TPQ, CLAP, 105, 120});
+
+        // Closed hi-hats every 8th note
         for (int eighth = 0; eighth < 8; eighth++) {
             uint32_t tick = barStart + eighth * (TPQ / 2);
-            addNote(track, tick - currentTick, HIHAT, 80, 60);
-            currentTick = tick + 60;
+            events.push_back({tick, CLOSED_HAT, 80, 60});
         }
 
-        uint32_t snareTick = barStart + 2 * TPQ; // beat 3
-        addNote(track, snareTick - currentTick, SNARE, 110, 120);
-        currentTick = snareTick + 120;
+        // Open hat on beat 4&
+        events.push_back({barStart + 3 * TPQ + TPQ / 2, OPEN_HAT, 95, 180});
+
+        // Triangle on beat 2& and 4&
+        events.push_back({barStart + 1 * TPQ + TPQ / 2, TRIANGLE, 70, 240});
+        events.push_back({barStart + 3 * TPQ + TPQ / 2, TRIANGLE, 70, 240});
+    }
+
+    sort(events.begin(), events.end(), [](const Event& a, const Event& b) {
+        return a.tick < b.tick;
+    });
+
+    uint32_t currentTick = 0;
+
+    for (const auto& e : events) {
+        writeVarLen(track, e.tick - currentTick);
+
+        writeByte(track, 0x90 | DRUM_CHANNEL);
+        writeByte(track, e.note);
+        writeByte(track, e.velocity);
+
+        writeVarLen(track, e.duration);
+
+        writeByte(track, 0x80 | DRUM_CHANNEL);
+        writeByte(track, e.note);
+        writeByte(track, 0);
+
+        currentTick = e.tick + e.duration;
     }
 
     // End of track
